@@ -1,6 +1,6 @@
 [package]
 name = "ocrs"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 authors = ["Robert Knight"]
 description = "OCR engine"
@@ -9,7 +9,7 @@ homepage = "https://github.com/robertknight/ocrs"
 repository = "https://github.com/robertknight/ocrs"
 
 [dependencies]
-anyhow = "1.0.93"
+anyhow = "1.0.95"
 rayon = "1.10.0"
 rten = { workspace = true }
 rten-imageproc = { workspace = true }
