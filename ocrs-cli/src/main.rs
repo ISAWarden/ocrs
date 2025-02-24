@@ -2,9 +2,12 @@ use std::collections::VecDeque;
 use std::error::Error;
 use std::fs;
 use std::io::BufWriter;
+use std::process::exit;
 
 use anyhow::{anyhow, Context};
-use ocrs::{DecodeMethod, DimOrder, ImageSource, OcrEngine, OcrEngineParams, OcrInput};
+use ocrs::{
+    DecodeMethod, DimOrder, ImageSource, OcrEngine, OcrEngineParams, OcrInput, TypedArea, MASK_KEYS,
+};
 use rten_imageproc::RotatedRect;
 use rten_tensor::prelude::*;
 use rten_tensor::{NdTensor, NdTensorView};
@@ -76,6 +79,9 @@ fn write_preprocessed_text_line_images(
 }
 
 struct Args {
+    /// Indicate markdown output
+    markdown: bool,
+
     /// Path to text detection model.
     detection_model: Option<String>,
 
@@ -117,6 +123,7 @@ struct Args {
 fn parse_args() -> Result<Args, lexopt::Error> {
     use lexopt::prelude::*;
 
+    let mut markdown = false;
     let mut values = VecDeque::new();
     let mut allowed_chars = None;
     let mut alphabet = None;
@@ -136,6 +143,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Value(val) => values.push_back(val.string()?),
             Long("allowed-chars") => {
                 allowed_chars = Some(parser.value()?.string()?);
+            }
+            Long("markdown") => {
+                markdown = true;
             }
             Short('a') | Long("alphabet") => {
                 alphabet = Some(parser.value()?.string()?);
@@ -177,6 +187,10 @@ fn parse_args() -> Result<Args, lexopt::Error> {
 Usage: {bin_name} [OPTIONS] <image>
 
 Options:
+
+  --markdown
+    
+    Return markdown (ignores some other options such as --*-mask)
 
   --allowed-chars <chars>
 
@@ -247,6 +261,7 @@ Advanced options:
     }
 
     Ok(Args {
+        markdown,
         alphabet,
         beam_search,
         debug,
@@ -332,31 +347,45 @@ fn main() -> Result<(), Box<dyn Error>> {
     let color_img_source = ImageSource::from_tensor(color_img.view(), DimOrder::Hwc)?;
     let ocr_input = engine.prepare_input(color_img_source)?;
 
+    if args.markdown {
+        let markdown = engine.get_markdown(&ocr_input)?;
+        println!("{}", markdown);
+        exit(0);
+    }
+
     if args.text_map || args.text_mask {
         let text_map = engine.detect_text_pixels(&ocr_input)?;
         let [height, width] = text_map.shape();
-        let text_map = text_map.into_shape([1, height, width]);
-        if args.text_map {
-            write_image("text-map.png", text_map.view())?;
-        }
 
         if args.text_mask {
-            let threshold = engine.detection_threshold();
-            let text_mask = text_map.map(|x| if *x > threshold { 1. } else { 0. });
-            write_image("text-mask.png", text_mask.view())?;
+            for (idx, key) in MASK_KEYS.iter().enumerate() {
+                let binary_mask = text_map
+                    .map(|x| if *x == ((idx + 1) as u8) { 1.0 } else { 0.0 })
+                    .into_shape([1, height, width]);
+                write_image(&format!("text-{}-mask.png", key), binary_mask.view())?;
+            }
         }
     }
 
-    let word_rects = engine.detect_words(&ocr_input)?;
+    let typed_areas = engine.detect_words(&ocr_input)?;
+    let typed_text: Vec<TypedArea> = typed_areas
+        .iter()
+        .cloned()
+        .filter(|x| x.area_type != "image")
+        .collect();
 
-    let line_rects = engine.find_text_lines(&ocr_input, &word_rects);
+    let line_rects = engine.find_text_lines(&ocr_input, &typed_text);
+    let line_rects: Vec<Vec<RotatedRect>> = line_rects
+        .into_iter()
+        .map(|x| x.iter().map(|x| x.rect).collect())
+        .collect();
+
     if args.text_line_images {
         write_preprocessed_text_line_images(&ocr_input, &engine, &line_rects, "lines")?;
         // write_text_line_images(color_img.view(), &line_rects, "lines")?;
     }
 
     let line_texts = engine.recognize_text(&ocr_input, &line_rects)?;
-
     let write_output_str = |content: String| -> Result<(), Box<dyn Error>> {
         if let Some(output_path) = &args.output_path {
             std::fs::write(output_path, content.into_bytes())
@@ -398,7 +427,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.debug {
         println!(
             "Found {} words, {} lines in image of size {}x{}",
-            word_rects.len(),
+            typed_areas.len(),
             line_rects.len(),
             color_img.size(2),
             color_img.size(1),

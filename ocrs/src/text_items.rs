@@ -44,7 +44,7 @@ impl fmt::Display for TextLine {
 }
 
 /// Details of a single character that was recognized.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TextChar {
     /// Character that was recognized.
     pub char: char,
@@ -57,7 +57,7 @@ pub struct TextChar {
 ///
 /// This includes the sequence of characters that were found and associated
 /// metadata (eg. bounding boxes).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TextLine {
     chars: Vec<TextChar>,
 }

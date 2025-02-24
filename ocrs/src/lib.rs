@@ -1,5 +1,8 @@
 use anyhow::anyhow;
 use rten::Model;
+use rten_imageproc::BoundingRect;
+use rten_imageproc::Point;
+use rten_imageproc::Rect;
 use rten_imageproc::RotatedRect;
 use rten_tensor::prelude::*;
 use rten_tensor::NdTensor;
@@ -31,6 +34,27 @@ pub use text_items::{TextChar, TextItem, TextLine, TextWord};
 
 // nb. The "E" before "ABCDE" should be the EUR symbol.
 const DEFAULT_ALPHABET: &str = " 0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~EABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+pub const MASK_KEYS: &[&str] = &["normal", "header", "list_item", "image"];
+
+#[derive(Clone, Copy)]
+pub struct TypedArea {
+    pub rect: RotatedRect,
+    pub area_type: &'static str,
+}
+
+impl TypedArea {
+    pub fn center(&self) -> Point<f32> {
+        self.rect.center()
+    }
+
+    pub fn height(&self) -> f32 {
+        self.rect.height()
+    }
+
+    pub fn bounding_rect(&self) -> Rect<f32> {
+        self.rect.bounding_rect()
+    }
+}
 
 /// Configuration for an [OcrEngine] instance.
 #[derive(Default)]
@@ -148,7 +172,7 @@ impl OcrEngine {
     ///
     /// Returns an unordered list of the oriented bounding rectangles of each
     /// word found.
-    pub fn detect_words(&self, input: &OcrInput) -> anyhow::Result<Vec<RotatedRect>> {
+    pub fn detect_words(&self, input: &OcrInput) -> anyhow::Result<Vec<TypedArea>> {
         if let Some(detector) = self.detector.as_ref() {
             detector.detect_words(input.image.view(), self.debug)
         } else {
@@ -162,7 +186,7 @@ impl OcrEngine {
     /// input being part of a text word. This is a low-level API that is useful
     /// for debugging purposes. Use [detect_words](OcrEngine::detect_words) for
     /// a higher-level API that returns oriented bounding boxes of words.
-    pub fn detect_text_pixels(&self, input: &OcrInput) -> anyhow::Result<NdTensor<f32, 2>> {
+    pub fn detect_text_pixels(&self, input: &OcrInput) -> anyhow::Result<NdTensor<u8, 2>> {
         if let Some(detector) = self.detector.as_ref() {
             detector.detect_text_pixels(input.image.view(), self.debug)
         } else {
@@ -177,11 +201,7 @@ impl OcrEngine {
     /// [OcrEngine::detect_words]. The result is a list of lines, in reading
     /// order. Each line is a sequence of word bounding rectangles, in reading
     /// order.
-    pub fn find_text_lines(
-        &self,
-        _input: &OcrInput,
-        words: &[RotatedRect],
-    ) -> Vec<Vec<RotatedRect>> {
+    pub fn find_text_lines(&self, _input: &OcrInput, words: &[TypedArea]) -> Vec<Vec<TypedArea>> {
         find_text_lines(words)
     }
 
@@ -244,10 +264,52 @@ impl OcrEngine {
             .unwrap_or(TextDetectorParams::default().text_threshold)
     }
 
+    pub fn get_markdown(&self, input: &OcrInput) -> anyhow::Result<String> {
+        let typed_areas = self.detect_words(&input)?;
+
+        let typed_text: Vec<TypedArea> = typed_areas
+            .into_iter()
+            .filter(|x| x.area_type != "image")
+            .collect();
+
+        let line_rects = self.find_text_lines(&input, &typed_text);
+        let line_types: Vec<&'static str> = line_rects
+            .iter()
+            .map(|x| x.first().unwrap().area_type)
+            .collect();
+        let line_rects: Vec<Vec<RotatedRect>> = line_rects
+            .into_iter()
+            .map(|x| x.into_iter().map(|x2| x2.rect).collect())
+            .collect();
+
+        let text = self
+            .recognize_text(input, &line_rects)?
+            .into_iter()
+            .zip(line_types.into_iter())
+            .filter_map(|(line, line_type)| {
+                line.map(|l| match line_type {
+                    "header" => {
+                        format!("# {}", l)
+                    }
+                    "list_item" => {
+                        format!(" - {}", l)
+                    }
+                    _ => l.to_string(),
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(text)
+    }
+
     /// Convenience API that extracts all text from an image as a single string.
     pub fn get_text(&self, input: &OcrInput) -> anyhow::Result<String> {
         let word_rects = self.detect_words(input)?;
         let line_rects = self.find_text_lines(input, &word_rects);
+        let line_rects: Vec<Vec<RotatedRect>> = line_rects
+            .into_iter()
+            .map(|x| x.into_iter().map(|x2| x2.rect).collect())
+            .collect();
         let text = self
             .recognize_text(input, &line_rects)?
             .into_iter()

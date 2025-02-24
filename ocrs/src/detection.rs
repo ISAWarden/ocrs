@@ -1,10 +1,11 @@
 use anyhow::anyhow;
 use rten::{Dimension, FloatOperators, Model, Operators, RunOptions};
 use rten_imageproc::{find_contours, min_area_rect, simplify_polygon, RetrievalMode, RotatedRect};
-use rten_tensor::prelude::*;
+use rten_tensor::{prelude::*, NdLayout, TensorBase};
 use rten_tensor::{NdTensor, NdTensorView, Tensor};
 
 use crate::preprocess::BLACK_VALUE;
+use crate::{TypedArea, MASK_KEYS};
 
 /// Parameters that control post-processing of text detection model outputs.
 #[derive(Clone, Debug, PartialEq)]
@@ -110,19 +111,31 @@ impl TextDetector {
         &self,
         image: NdTensorView<f32, 3>,
         debug: bool,
-    ) -> anyhow::Result<Vec<RotatedRect>> {
+    ) -> anyhow::Result<Vec<TypedArea>> {
         let text_mask = self.detect_text_pixels(image, debug)?;
-        let binary_mask = text_mask.map(|prob| *prob > self.params.text_threshold);
 
-        // Distance to expand bounding boxes by. This is useful when the model is
-        // trained to assign a positive label to pixels in a smaller area than the
-        // ground truth, which may be done to create separation between adjacent
-        // objects.
-        let expand_dist = 3.;
-
-        let word_rects =
-            find_connected_component_rects(binary_mask.view(), expand_dist, self.params.min_area);
-
+        let word_rects = MASK_KEYS
+            .iter()
+            .enumerate()
+            .map(|(idx, key)| {
+                // Distance to expand bounding boxes by. This is useful when the model is
+                // trained to assign a positive label to pixels in a smaller area than the
+                // ground truth, which may be done to create separation between adjacent
+                // objects.
+                let expand_dist = 3.;
+                let binary_mask = text_mask.map(|x| *x == ((idx + 1) as u8));
+                let word_rects = find_connected_component_rects(
+                    binary_mask.view(),
+                    expand_dist,
+                    self.params.min_area,
+                );
+                word_rects.into_iter().map(|x| TypedArea {
+                    rect: x,
+                    area_type: *key,
+                })
+            })
+            .flatten()
+            .collect();
         Ok(word_rects)
     }
 
@@ -137,7 +150,7 @@ impl TextDetector {
         &self,
         image: NdTensorView<f32, 3>,
         debug: bool,
-    ) -> anyhow::Result<NdTensor<f32, 2>> {
+    ) -> anyhow::Result<NdTensor<u8, 2>> {
         let [img_chans, img_height, img_width] = image.shape();
 
         // Add batch dim
@@ -148,36 +161,11 @@ impl TextDetector {
             return Err(anyhow!("failed to get model dims"));
         };
 
-        // Pad small images to the input size of the text detection model. This is
-        // needed because simply scaling small images up to a fixed size may produce
-        // very large or distorted text that is hard for detection/recognition to
-        // process.
-        //
-        // Padding images is however inefficient because it means that we are
-        // potentially feeding a lot of blank pixels into the text detection model.
-        // It would be better if text detection were able to accept variable-sized
-        // inputs, within some limits.
-        let pad_bottom = (in_height as i32 - img_height as i32).max(0);
-        let pad_right = (in_width as i32 - img_width as i32).max(0);
-        let image = (pad_bottom > 0 || pad_right > 0)
-            .then(|| {
-                let pads = &[0, 0, 0, 0, 0, 0, pad_bottom, pad_right];
-                image.pad(pads.into(), BLACK_VALUE)
-            })
-            .transpose()?
-            .map(|t| t.into_cow())
-            .unwrap_or(image.as_dyn().as_cow());
-
-        // Resize images to the text detection model's input size.
-        let image = (image.size(2) != in_height || image.size(3) != in_width)
-            .then(|| image.resize_image([in_height, in_width]))
-            .transpose()?
-            .map(|t| t.into_cow())
-            .unwrap_or(image);
+        let image = image.as_dyn().as_cow();
 
         // Run text detection model to compute a probability mask indicating whether
         // each pixel is part of a text word or not.
-        let text_mask: Tensor<f32> = self
+        let text_mask: Tensor<i32> = self
             .model
             .run_one(
                 image.view().into(),
@@ -193,21 +181,9 @@ impl TextDetector {
             )?
             .try_into()?;
 
-        // Resize probability mask to original input size and apply threshold to get a
-        // binary text/not-text mask.
-        let text_mask = text_mask
-            .slice((
-                ..,
-                ..,
-                ..(in_height - pad_bottom as usize),
-                ..(in_width - pad_right as usize),
-            ))
-            .resize_image([img_height, img_width])?;
-
-        // Remove batch, channel dims.
-        let text_mask = text_mask.into_shape([img_height, img_width]);
-
-        Ok(text_mask)
+        Ok(text_mask
+            .map(|x| *x as u8)
+            .into_shape([img_height, img_width]))
     }
 }
 

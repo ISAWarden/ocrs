@@ -1,6 +1,9 @@
 use rten_imageproc::{bounding_rect, BoundingRect, Line, LineF, Point, Rect, RotatedRect};
 
-use crate::geom_util::{leftmost_edge, rightmost_edge};
+use crate::{
+    geom_util::{leftmost_edge, rightmost_edge},
+    TypedArea,
+};
 
 mod empty_rects;
 use empty_rects::{max_empty_rects, FilterOverlapping};
@@ -16,7 +19,7 @@ fn rects_separated_by_line(a: &RotatedRect, b: &RotatedRect, l: LineF) -> bool {
 /// `separators` is a list of line segments that prevent the formation of
 /// lines which cross them. They can be used to specify column boundaries
 /// for example.
-pub fn group_into_lines(rects: &[RotatedRect], separators: &[LineF]) -> Vec<Vec<RotatedRect>> {
+pub fn group_into_lines(rects: &[TypedArea], separators: &[LineF]) -> Vec<Vec<TypedArea>> {
     let mut sorted_rects: Vec<_> = rects.to_vec();
     sorted_rects.sort_by_key(|r| r.bounding_rect().left() as i32);
 
@@ -42,19 +45,19 @@ pub fn group_into_lines(rects: &[RotatedRect], separators: &[LineF]) -> Vec<Vec<
         // right, and keep going as long as we can find such a candidate.
         loop {
             let last = line.last().unwrap();
-            let last_edge = rightmost_edge(last);
+            let last_edge = rightmost_edge(&last.rect);
 
             if let Some((i, next_item)) = sorted_rects
                 .iter()
                 .enumerate()
                 .filter(|(_, r)| {
-                    let edge = leftmost_edge(r);
-                    r.center().x > last.center().x
+                    let edge = leftmost_edge(&r.rect);
+                    r.center().x > last.rect.center().x
                         && edge.center().x - last_edge.center().x >= -max_h_overlap as f32
                         && last_edge.vertical_overlap(edge) >= overlap_threshold as f32
                         && !separators
                             .iter()
-                            .any(|&s| rects_separated_by_line(last, r, s))
+                            .any(|&s| rects_separated_by_line(&last.rect, &r.rect, s))
                 })
                 .min_by_key(|(_, r)| r.center().x as i32)
             {
@@ -72,7 +75,7 @@ pub fn group_into_lines(rects: &[RotatedRect], separators: &[LineF]) -> Vec<Vec<
 
 /// A text line is a sequence of RotatedRects for words, organized from left to
 /// right.
-type TextLine = Vec<RotatedRect>;
+type TextLine = Vec<TypedArea>;
 
 type TextParagraph = Vec<TextLine>;
 
@@ -80,14 +83,16 @@ type TextParagraph = Vec<TextLine>;
 ///
 /// This includes separators between columns, as well as between sections (eg.
 /// headings and article contents).
-pub fn find_block_separators(words: &[RotatedRect]) -> Vec<Rect> {
-    let Some(page_rect) = bounding_rect(words.iter()).map(|br| br.integral_bounding_rect()) else {
+pub fn find_block_separators(words: &[TypedArea]) -> Vec<Rect> {
+    let Some(page_rect) =
+        bounding_rect(words.iter().map(|x| &x.rect)).map(|br| br.integral_bounding_rect())
+    else {
         return Vec::new();
     };
 
     // Estimate spacing statistics
     let mut lines = group_into_lines(words, &[]);
-    lines.sort_by_key(|l| l.first().unwrap().bounding_rect().top().round() as i32);
+    lines.sort_by_key(|l| l.first().unwrap().rect.bounding_rect().top().round() as i32);
 
     let mut all_word_spacings = Vec::new();
     for line in lines {
@@ -98,7 +103,7 @@ pub fn find_block_separators(words: &[RotatedRect]) -> Vec<Rect> {
                 .iter()
                 .zip(line.iter().skip(1))
                 .map(|(cur, next)| {
-                    (next.bounding_rect().left() - cur.bounding_rect().right())
+                    (next.rect.bounding_rect().left() - cur.bounding_rect().right())
                         .max(0.)
                         .round() as i32
                 })
@@ -155,7 +160,7 @@ pub fn find_block_separators(words: &[RotatedRect]) -> Vec<Rect> {
 }
 
 /// Group words into lines and sort them into reading order.
-pub fn find_text_lines(words: &[RotatedRect]) -> Vec<Vec<RotatedRect>> {
+pub fn find_text_lines(words: &[TypedArea]) -> Vec<Vec<TypedArea>> {
     let separators = find_block_separators(words);
     let vertical_separators: Vec<_> = separators
         .iter()
@@ -183,11 +188,23 @@ pub fn find_text_lines(words: &[RotatedRect]) -> Vec<Vec<RotatedRect>> {
 
     // Approximate a text line by the 1D line from the center of the left
     // edge of the first word, to the center of the right edge of the last word.
-    let midpoint_line = |words: &[RotatedRect]| -> LineF {
+    let midpoint_line = |words: &[TypedArea]| -> LineF {
         assert!(!words.is_empty());
         Line::from_endpoints(
-            words.first().unwrap().bounding_rect().left_edge().center(),
-            words.last().unwrap().bounding_rect().right_edge().center(),
+            words
+                .first()
+                .unwrap()
+                .rect
+                .bounding_rect()
+                .left_edge()
+                .center(),
+            words
+                .last()
+                .unwrap()
+                .rect
+                .bounding_rect()
+                .right_edge()
+                .center(),
         )
     };
 
