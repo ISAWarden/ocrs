@@ -2,7 +2,7 @@ use rten::{
     ops::{resize, CoordTransformMode, NearestMode, OpError, ResizeMode, ResizeTarget},
     TensorPool,
 };
-use rten_tensor::{AsView, Layout, NdTensor, NdTensorView, Tensor, TensorView, ViewData};
+use rten_tensor::{AsView, Layout, NdTensorView, Tensor};
 
 pub fn resize_image_nearest(
     input: NdTensorView<f32, 4>,

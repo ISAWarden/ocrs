@@ -1,11 +1,9 @@
-use crate::preprocess::BLACK_VALUE;
 use crate::resize_image_nearest::resize_image_nearest;
 use crate::{TypedArea, MASK_KEYS};
 use anyhow::anyhow;
-use rten::ops::{resize_image, OpError};
 use rten::{Dimension, FloatOperators, Model, Operators, RunOptions};
 use rten_imageproc::{find_contours, min_area_rect, simplify_polygon, RetrievalMode, RotatedRect};
-use rten_tensor::{prelude::*, NdLayout, TensorBase, TensorView};
+use rten_tensor::prelude::*;
 use rten_tensor::{NdTensor, NdTensorView, Tensor};
 
 /// Parameters that control post-processing of text detection model outputs.
