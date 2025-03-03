@@ -14,6 +14,7 @@ mod layout_analysis;
 mod log;
 mod preprocess;
 mod recognition;
+mod resize_image_nearest;
 
 #[cfg(test)]
 mod test_util;

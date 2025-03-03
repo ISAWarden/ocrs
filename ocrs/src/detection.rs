@@ -1,11 +1,12 @@
+use crate::preprocess::BLACK_VALUE;
+use crate::resize_image_nearest::resize_image_nearest;
+use crate::{TypedArea, MASK_KEYS};
 use anyhow::anyhow;
+use rten::ops::{resize_image, OpError};
 use rten::{Dimension, FloatOperators, Model, Operators, RunOptions};
 use rten_imageproc::{find_contours, min_area_rect, simplify_polygon, RetrievalMode, RotatedRect};
-use rten_tensor::{prelude::*, NdLayout, TensorBase};
+use rten_tensor::{prelude::*, NdLayout, TensorBase, TensorView};
 use rten_tensor::{NdTensor, NdTensorView, Tensor};
-
-use crate::preprocess::BLACK_VALUE;
-use crate::{TypedArea, MASK_KEYS};
 
 /// Parameters that control post-processing of text detection model outputs.
 #[derive(Clone, Debug, PartialEq)]
@@ -161,7 +162,12 @@ impl TextDetector {
             return Err(anyhow!("failed to get model dims"));
         };
 
-        let image = image.as_dyn().as_cow();
+        // Resize images to the text detection model's input size.
+        let image = (image.size(2) != in_height || image.size(3) != in_width)
+            .then(|| image.resize_image([in_height, in_width]))
+            .transpose()?
+            .map(|t| t.into_cow())
+            .unwrap_or(image.as_dyn().as_cow());
 
         // Run text detection model to compute a probability mask indicating whether
         // each pixel is part of a text word or not.
@@ -181,9 +187,16 @@ impl TextDetector {
             )?
             .try_into()?;
 
-        Ok(text_mask
-            .map(|x| *x as u8)
-            .into_shape([img_height, img_width]))
+        // Resize the mask to be compatible with the image input. Since resize_image can only
+        // resize non-binary masks, we will convert to F32 then to the final 8-bit output
+        let dequantized_mask = text_mask
+            .slice((.., ..in_height, ..in_width))
+            .map(|x| *x as f32)
+            .into_shape([1, 1, in_height, in_width]);
+        let resized_quantized_mask =
+            resize_image_nearest(dequantized_mask.view(), [img_height, img_width])?
+                .map(|x| x.round() as u8);
+        Ok(resized_quantized_mask.into_shape([img_height, img_width]))
     }
 }
 
