@@ -1,61 +1,62 @@
-pub fn text_error_correct(ocr_text: &str, reference_text: &str) -> String {
-    let ocr_bytes = ocr_text.as_bytes();
-    let reference_bytes = reference_text.as_bytes();
-    let ocr_len = ocr_bytes.len();
-    let reference_len = reference_bytes.len();
+use std::collections::HashSet;
 
-    if ocr_len == 0 {
-        return ocr_text.to_string();
+fn levenshtein_distance(s1: &str, s2: &str) -> usize {
+    let v1: Vec<char> = s1.chars().collect();
+    let v2: Vec<char> = s2.chars().collect();
+    let len1 = v1.len();
+    let len2 = v2.len();
+    let mut dp = vec![vec![0; len2 + 1]; len1 + 1];
+
+    for i in 0..=len1 {
+        for j in 0..=len2 {
+            if i == 0 {
+                dp[i][j] = j;
+            } else if j == 0 {
+                dp[i][j] = i;
+            } else if v1[i - 1] == v2[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1];
+            } else {
+                dp[i][j] = 1 + std::cmp::min(
+                    dp[i - 1][j],
+                    std::cmp::min(dp[i][j - 1], dp[i - 1][j - 1]),
+                );
+            }
+        }
     }
 
-    let mut best_correction: Option<Vec<u8>> = None;
-    let mut min_errors = usize::MAX;
+    dp[len1][len2]
+}
 
-    // Iterate over possible starting positions in the reference where the first byte matches
-    for start in 0..reference_len {
-        if reference_bytes[start] != ocr_bytes[0] {
-            continue;
-        }
+pub fn text_error_correct(ocr_text: &str, reference_text: &str) -> String {
+    let threshold = 2; // Adjust this threshold as needed
+    let ocr_words: Vec<&str> = ocr_text.split_whitespace().collect();
+    let reference_words: Vec<&str> = reference_text.split_whitespace().collect();
+    let reference_set: HashSet<&str> = reference_words.iter().cloned().collect();
+    let mut corrected_text = Vec::new();
+    let mut last_index = 0;
 
-        let mut corrected = Vec::with_capacity(ocr_len);
-        let mut errors = 0;
-        let mut ref_pos = start;
-        let mut ocr_pos = 0;
+    for word in ocr_words {
+        let mut min_distance = usize::MAX;
+        let mut closest_word = word;
 
-        while ocr_pos < ocr_len && ref_pos < reference_len {
-            if ocr_bytes[ocr_pos] == reference_bytes[ref_pos] {
-                corrected.push(reference_bytes[ref_pos]);
-            } else {
-                corrected.push(reference_bytes[ref_pos]);
-                errors += 1;
-                if errors > 10 {
+        for (i, ref_word) in reference_words[last_index..].iter().enumerate() {
+            let distance = levenshtein_distance(word, ref_word);
+            if distance < min_distance {
+                min_distance = distance;
+                closest_word = ref_word;
+                if min_distance == 0 {
                     break;
                 }
             }
-            ocr_pos += 1;
-            ref_pos += 1;
         }
 
-        // Check if we've processed all OCR characters and if errors are within limit
-        if ocr_pos == ocr_len && errors <= 10 {
-            // If the reference is shorter than OCR after start, fill remaining with OCR bytes (but this case shouldn't happen due to loop)
-            while ocr_pos < ocr_len {
-                corrected.push(ocr_bytes[ocr_pos]);
-                ocr_pos += 1;
-            }
-
-            // Update best correction if current is better
-            if errors < min_errors {
-                min_errors = errors;
-                best_correction = Some(corrected);
-            }
+        if min_distance <= threshold && reference_set.contains(closest_word) {
+            corrected_text.push(closest_word);
+            last_index += min_distance; // Update last_index to avoid reprocessing
+        } else {
+            corrected_text.push(word);
         }
     }
 
-    // Convert the best correction to a string, fallback to original OCR if invalid UTF-8 or no correction found
-    if let Some(corrected_bytes) = best_correction {
-        String::from_utf8(corrected_bytes).unwrap_or_else(|_| ocr_text.to_string())
-    } else {
-        ocr_text.to_string()
-    }
+    corrected_text.join(" ")
 }
