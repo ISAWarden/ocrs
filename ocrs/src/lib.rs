@@ -34,6 +34,7 @@ pub use preprocess::{DimOrder, ImagePixels, ImageSource, ImageSourceError};
 pub use recognition::DecodeMethod;
 use text_correction::text_error_correct;
 pub use text_items::{TextChar, TextItem, TextLine, TextWord};
+use tracing::debug;
 
 // nb. The "E" before "ABCDE" should be the EUR symbol.
 const DEFAULT_ALPHABET: &str = " 0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~EABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -297,7 +298,12 @@ impl OcrEngine {
                 if let Some(line) = line {
                     let mut line_str = format!("{}", line);
                     if let Some(guidance_text) = guidance_text {
-                        line_str = text_error_correct(&line_str, guidance_text);
+                        let line_str_corrected = text_error_correct(&line_str, guidance_text);
+                        debug!(
+                            "Correction done\nOriginal: {}\nCorrected: {}",
+                            line_str, line_str_corrected
+                        );
+                        line_str = line_str_corrected;
                     }
                     line_str = match line_type {
                         "header" => {
