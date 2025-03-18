@@ -15,6 +15,7 @@ mod log;
 mod preprocess;
 mod recognition;
 mod resize_image_nearest;
+mod text_correction;
 
 #[cfg(test)]
 mod test_util;
@@ -31,6 +32,7 @@ use recognition::{RecognitionOpt, TextRecognizer};
 
 pub use preprocess::{DimOrder, ImagePixels, ImageSource, ImageSourceError};
 pub use recognition::DecodeMethod;
+use text_correction::text_error_correct;
 pub use text_items::{TextChar, TextItem, TextLine, TextWord};
 
 // nb. The "E" before "ABCDE" should be the EUR symbol.
@@ -265,7 +267,11 @@ impl OcrEngine {
             .unwrap_or(TextDetectorParams::default().text_threshold)
     }
 
-    pub fn get_markdown(&self, input: &OcrInput) -> anyhow::Result<String> {
+    pub fn get_markdown(
+        &self,
+        input: &OcrInput,
+        guidance_text: Option<&str>,
+    ) -> anyhow::Result<String> {
         let typed_areas = self.detect_words(&input)?;
 
         let typed_text: Vec<TypedArea> = typed_areas
@@ -288,15 +294,23 @@ impl OcrEngine {
             .into_iter()
             .zip(line_types.into_iter())
             .filter_map(|(line, line_type)| {
-                line.map(|l| match line_type {
-                    "header" => {
-                        format!("# {}", l)
+                if let Some(line) = line {
+                    let mut line_str = format!("{}", line);
+                    if let Some(guidance_text) = guidance_text {
+                        line_str = text_error_correct(&line_str, guidance_text);
                     }
-                    "list_item" => {
-                        format!(" - {}", l)
-                    }
-                    _ => l.to_string(),
-                })
+                    line_str = match line_type {
+                        "header" => {
+                            format!("# {}", line_str)
+                        }
+                        "list_item" => {
+                            format!(" - {}", line_str)
+                        }
+                        _ => line_str,
+                    };
+                    return Some(line_str);
+                }
+                None
             })
             .collect::<Vec<_>>()
             .join("\n");

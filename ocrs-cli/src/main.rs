@@ -348,7 +348,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let ocr_input = engine.prepare_input(color_img_source)?;
 
     if args.markdown {
-        let markdown = engine.get_markdown(&ocr_input)?;
+        let markdown = engine.get_markdown(&ocr_input, None)?;
         println!("{}", markdown);
         exit(0);
     }
